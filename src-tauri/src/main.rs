@@ -3,55 +3,123 @@
 
 use std::env;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
+use anyhow::Result;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
+use tauri::Manager;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
-async fn process_request(stream: &mut TcpStream, _addr: SocketAddr) -> Result<(), std::io::Error> {
+mod ipc;
+use ipc::command::*;
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Comment {
+    id: usize,
+    text: String,
+    offset_top_ratio: f32,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RendererInfo {
+    window_index: usize,
+    num_displays: usize,
+    is_single_window: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OnCommentReceivedPayload {
+    comment: Comment,
+    renderer_info: RendererInfo,
+}
+
+async fn process_request(stream: &mut TcpStream, _addr: SocketAddr) -> Result<String> {
     let mut received = Vec::with_capacity(1024);
     let mut buf = vec![0; 1024];
 
     loop {
         match stream.read(&mut buf).await {
             Ok(0) => {
-                println!("{}", String::from_utf8_lossy(&received));
-                break;
+                let text = String::from_utf8_lossy(&received);
+                println!("{}", text);
+                return Ok(text.to_string());
             }
             Ok(n) => received.append(&mut buf[0..n].to_vec()),
             Err(e) => {
                 eprintln!("failed to read from socket; err = {:?}", e);
-                return Err(e);
+                return Err(e.into());
             }
         };
     }
-    Ok(())
 }
 
-// Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>> {
+fn main() -> Result<()> {
     let bind_addr = env::args()
         .nth(1)
         .unwrap_or_else(|| "0.0.0.0:2525".to_string());
-    let listener = TcpListener::bind(bind_addr).await?;
-
-    let _task = tokio::spawn(async move {
-        loop {
-            let (mut socket, addr) = listener.accept().await?;
-            tokio::spawn(async move { process_request(&mut socket, addr).await });
-        }
-
-        #[allow(unreachable_code)]
-        Ok::<(), std::io::Error>(())
-    });
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![greet])
+        .setup(|app| {
+            let app_handle = Arc::new(app.handle());
+
+            tauri::async_runtime::spawn(async move {
+                let listener = TcpListener::bind(bind_addr).await?;
+                loop {
+                    let (mut socket, addr) = listener.accept().await?;
+                    let app_handle = app_handle.clone();
+
+                    tauri::async_runtime::spawn(async move {
+                        let text = process_request(&mut socket, addr).await?;
+                        app_handle.emit_all(
+                            "comment",
+                            OnCommentReceivedPayload {
+                                comment: Comment {
+                                    id: 0,
+                                    text,
+                                    offset_top_ratio: rand::thread_rng().gen_range(0.0..1.0) * 0.9,
+                                },
+                                renderer_info: RendererInfo {
+                                    window_index: 0,
+                                    num_displays: 1,
+                                    is_single_window: true,
+                                },
+                            },
+                        )?;
+                        anyhow::Ok(())
+                    });
+                }
+
+                #[allow(unreachable_code)]
+                anyhow::Ok(())
+            });
+
+            app.listen_global("comment-arrived-to-left-edge", |event| {
+                // TODO
+                println!(
+                    "got comment-arrived-to-left-edge with payload {:?}",
+                    event.payload()
+                );
+            });
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            request_duration,
+            request_default_duration,
+            request_text_color_style,
+            request_text_stroke_style,
+            request_newline_enabled,
+            request_icon_enabled,
+            request_inline_img_enabled,
+            request_img_enabled,
+            request_video_enabled,
+            request_round_icon_enabled,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 
