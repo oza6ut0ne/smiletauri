@@ -46,6 +46,6 @@ pub mod command {
 
     #[tauri::command]
     pub fn request_round_icon_enabled() -> bool {
-        true
+        false
     }
 }

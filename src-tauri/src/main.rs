@@ -15,6 +15,71 @@ use tokio::net::{TcpListener, TcpStream};
 mod ipc;
 use ipc::command::*;
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommentSchema {
+    text: Option<String>,
+    icon: Option<String>,
+    images: Option<Vec<String>>,
+    videos: Option<Vec<String>>,
+    inline_images: Option<Vec<String>>,
+    color: Option<String>,
+    text_stroke: Option<String>,
+}
+
+impl CommentSchema {
+    pub fn to_comment_text(&self) -> String {
+        let mut comment = String::new();
+        if let Some(icon) = self.icon.as_ref() {
+            comment += icon;
+            comment += "##ICON##";
+        }
+
+        if let Some(color) = self.color.as_ref() {
+            comment += color;
+            comment += "##COLOR##";
+        }
+
+        if let Some(text_stroke) = self.text_stroke.as_ref() {
+            comment += text_stroke;
+            comment += "##TEXT_STROKE##";
+        }
+
+        let mut text = match self.text.as_ref() {
+            Some(text) => text.to_string(),
+            None => "".to_string(),
+        };
+
+        if let Some(inline_images) = self.inline_images.as_ref() {
+            for inline_image in inline_images.iter() {
+                text = text.replacen(
+                    "##INLINE##",
+                    &format!("##INLINE_IMG##{}##INLINE_IMG##", inline_image),
+                    1,
+                );
+            }
+        }
+
+        comment += &text;
+
+        if let Some(images) = self.images.as_ref() {
+            for image in images.iter() {
+                comment += "##IMG##";
+                comment += image;
+            }
+        }
+
+        if let Some(videos) = self.videos.as_ref() {
+            for video in videos.iter() {
+                comment += "##VIDEO##";
+                comment += video;
+            }
+        }
+
+        comment
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Comment {
@@ -74,7 +139,10 @@ fn main() -> Result<()> {
                     let app_handle = app_handle.clone();
 
                     tauri::async_runtime::spawn(async move {
-                        let text = process_request(&mut socket, addr).await?;
+                        let mut text = process_request(&mut socket, addr).await?;
+                        if let Ok(deserialized) = serde_json::from_str::<CommentSchema>(&text) {
+                            text = deserialized.to_comment_text();
+                        }
                         app_handle.emit_all(
                             "comment",
                             OnCommentReceivedPayload {
