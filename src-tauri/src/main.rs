@@ -188,6 +188,9 @@ fn main() -> Result<()> {
             request_video_enabled,
             request_round_icon_enabled,
         ])
+        .on_page_load(|window, _payload| {
+            let _ = window.set_ignore_cursor_events(true);
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 
